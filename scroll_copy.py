@@ -104,6 +104,8 @@ class RunConfig:
     timeout_ms: int
     log_level: str
     do_finalize: bool
+    connect_existing: bool
+    debug_port: int
 
 
 def build_state_base(cfg: RunConfig, run_id: str) -> dict[str, Any]:
@@ -169,8 +171,12 @@ def effective_run_config(args: argparse.Namespace) -> RunConfig:
     container = pick("container", ("target", "container_selector"))
     line_selector = pick("line_selector", ("target", "line_selector"))
 
-    if not url or not container or not line_selector:
-        raise ValueError("--url, --container, --line-selector は必須です（--resume 時は state.json から補完可）")
+    # --connect-existing の場合は --url は省略可能
+    if not args.connect_existing and not url:
+        raise ValueError("--url は必須です（--connect-existing または --resume 時は省略可）")
+    
+    if not container or not line_selector:
+        raise ValueError("--container, --line-selector は必須です（--resume 時は state.json から補完可）")
 
     return RunConfig(
         url=url,
@@ -191,6 +197,8 @@ def effective_run_config(args: argparse.Namespace) -> RunConfig:
         timeout_ms=args.timeout_ms,
         log_level=args.log_level,
         do_finalize=args.finalize,
+        connect_existing=args.connect_existing,
+        debug_port=args.debug_port,
     )
 
 
@@ -225,9 +233,21 @@ def run_command(args: argparse.Namespace) -> int:
 
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=cfg.headless)
-            page = browser.new_page()
-            page.goto(cfg.url, wait_until="domcontentloaded", timeout=cfg.timeout_ms)
+            if cfg.connect_existing:
+                # 既存のブラウザに接続
+                browser = p.chromium.connect_over_cdp(f"http://localhost:{cfg.debug_port}")
+                context = browser.contexts[0]
+                page = context.pages[0] if context.pages else context.new_page()
+                print(f"[connect] 既存のブラウザに接続しました (現在のURL: {page.url})")
+                
+                # URLが指定されている場合のみ移動
+                if cfg.url and page.url != cfg.url:
+                    page.goto(cfg.url, wait_until="domcontentloaded", timeout=cfg.timeout_ms)
+            else:
+                # 新しいブラウザを起動
+                browser = p.chromium.launch(headless=cfg.headless)
+                page = browser.new_page()
+                page.goto(cfg.url, wait_until="domcontentloaded", timeout=cfg.timeout_ms)
 
             container = page.locator(cfg.container)
             if container.count() == 0:
@@ -427,6 +447,8 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--timeout-ms", type=int, default=30000)
     run.add_argument("--log-level", choices=["debug", "info", "warn", "error"], default="info")
     run.add_argument("--finalize", action=argparse.BooleanOptionalAction, default=True)
+    run.add_argument("--connect-existing", action="store_true", help="既存のデバッグモードブラウザに接続")
+    run.add_argument("--debug-port", type=int, default=9222, help="デバッグポート番号")
     run.set_defaults(func=run_command)
 
     fin = sub.add_parser("finalize", help="rawから最終出力を生成")

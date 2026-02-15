@@ -4,39 +4,114 @@ Webページ内の特定スクロール領域に表示されるテキストを�
 
 ## クイックスタート（実装版）
 
-### 1. 依存関係インストール
+### 1. 仮想環境の作成と有効化
 
-```bash
-python3 -m pip install -r requirements.txt
-python3 -m playwright install chromium
+```powershell
+# 仮想環境を作成
+python -m venv venv
+
+# 仮想環境を有効化
+.\venv\Scripts\Activate.ps1
 ```
 
-### 2. doctor（事前検証）
+実行ポリシーエラーが出た場合：
+```powershell
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+```
 
-```bash
-python3 scroll_copy.py doctor \
-  --url "対象URL" \
-  --container "#scrollToTargetTargetedFocusZone" \
+### 2. 依存関係インストール
+
+```powershell
+pip install -r requirements.txt
+playwright install chromium
+```
+
+### 3. 既存ブラウザに接続する方法（推奨）
+
+OAuth/SSOログインが必要なサイトや、手動で画面遷移が必要な場合に使用します。
+
+#### 3-1. Chromeをデバッグモードで起動
+
+デスクトップにショートカットを作成：
+1. デスクトップで右クリック → 新規作成 → ショートカット
+2. 項目の場所に以下を入力：
+```
+"C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222
+```
+3. ショートカット名を入力（例：Chrome Debug Mode）
+
+このショートカットからChromeを起動してください。
+
+#### 3-2. 手動でログインと画面遷移
+
+1. デバッグモードで起動したChromeで対象サイトにアクセス
+2. 手動でログイン
+3. 目的のページまで移動（タブ切り替えなど）
+
+#### 3-3. スクリプトを実行
+
+```powershell
+python scroll_copy.py run `
+  --connect-existing `
+  --container "#scrollToTargetTargetedFocusZone" `
+  --line-selector '[class^="entryText-"]' `
+  --output-raw "./out/raw_output.txt" `
+  --output-final "./out/final_output.txt"
+```
+
+**注意：** `--connect-existing`を使用する場合、`--url`は省略可能です（現在開いているページで実行されます）。
+
+### 4. 新しいブラウザで実行する方法
+
+ログインが不要なサイトの場合：
+
+```powershell
+python scroll_copy.py run `
+  --url "対象URL" `
+  --container "#scrollToTargetTargetedFocusZone" `
+  --line-selector '[class^="entryText-"]' `
+  --output-raw "./out/raw_output.txt" `
+  --output-final "./out/final_output.txt"
+```
+
+ヘッドレスモードを無効にする場合（ブラウザを表示）：
+```powershell
+python scroll_copy.py run `
+  --url "対象URL" `
+  --container "#scrollToTargetTargetedFocusZone" `
+  --line-selector '[class^="entryText-"]' `
+  --no-headless `
+  --output-raw "./out/raw_output.txt" `
+  --output-final "./out/final_output.txt"
+```
+
+### 5. doctor（事前検証）
+
+セレクタが正しいか確認：
+
+```powershell
+python scroll_copy.py doctor `
+  --url "対象URL" `
+  --container "#scrollToTargetTargetedFocusZone" `
   --line-selector '[class^="entryText-"]'
 ```
 
-### 3. run（収集＋最終出力）
+### 6. finalize（整形のみ再実行）
 
-```bash
-python3 scroll_copy.py run \
-  --url "対象URL" \
-  --container "#scrollToTargetTargetedFocusZone" \
-  --line-selector '[class^="entryText-"]' \
-  --output-raw "./out/raw_output.txt" \
+収集済みのrawファイルから重複除去のみ実行：
+
+```powershell
+python scroll_copy.py finalize `
+  --output-raw "./out/raw_output.txt" `
   --output-final "./out/final_output.txt"
 ```
 
-### 4. finalize（整形のみ再実行）
+### 7. 中断後の再開
 
-```bash
-python3 scroll_copy.py finalize \
-  --output-raw "./out/raw_output.txt" \
-  --output-final "./out/final_output.txt"
+```powershell
+python scroll_copy.py run `
+  --resume `
+  --state-file "./state.json"
 ```
 
 ## 目的
@@ -131,10 +206,13 @@ python3 scroll_copy.py finalize \
 
 ## CLI仕様（実装向け詳細）
 
-想定コマンド名は `scroll-copy`（仮）です。
+コマンド名は `scroll_copy.py` です。
 
-```bash
-scroll-copy run --url "https://example.com" --container ".scroll-pane" --line-selector ".line"
+```powershell
+python scroll_copy.py run `
+  --url "https://example.com" `
+  --container ".scroll-pane" `
+  --line-selector ".line"
 ```
 
 ### サブコマンド
@@ -147,13 +225,15 @@ scroll-copy run --url "https://example.com" --container ".scroll-pane" --line-se
 
 | オプション | 型 | デフォルト | 説明 |
 |---|---:|---:|---|
-| `--url` | string | なし | 対象ページURL |
+| `--url` | string | なし | 対象ページURL（`--connect-existing`時は省略可） |
 | `--container` | string | なし | テキスト表示スクロール領域のCSSセレクタ |
 | `--line-selector` | string | なし | 1行テキスト要素のCSSセレクタ |
 | `--output-raw` | path | `./raw_output.txt` | 逐次追記する生データ出力先 |
 | `--output-final` | path | `./final_output.txt` | 重複除去後の最終出力先 |
 | `--state-file` | path | `./state.json` | 再開用状態ファイル |
 | `--resume` | flag | `false` | `state.json` を読み込んで再開 |
+| `--connect-existing` | flag | `false` | 既存のデバッグモードブラウザに接続 |
+| `--debug-port` | int | `9222` | デバッグポート番号 |
 | `--max-idle-scrolls` | int | `8` | 新規行が増えない状態を何回で終了判定するか |
 | `--scroll-step` | int(px) | `400` | 1回のスクロール量 |
 | `--scroll-interval-ms` | int | `600` | スクロール間隔（ms） |
@@ -161,33 +241,66 @@ scroll-copy run --url "https://example.com" --container ".scroll-pane" --line-se
 | `--max-retries` | int | `3` | 一時エラー時の再試行回数 |
 | `--retry-wait-ms` | int | `1000` | 再試行前待機（ms） |
 | `--dedupe-mode` | enum | `exact` | 重複判定方式（初期値は完全一致） |
-| `--headless` | flag | `true` | ヘッドレス実行（デバッグ時は `false` 推奨） |
+| `--headless` | flag | `true` | ヘッドレス実行（`--no-headless`で無効化） |
 | `--timeout-ms` | int | `30000` | 要素待機・操作タイムアウト |
 | `--log-level` | enum | `info` | `debug / info / warn / error` |
 
 > 初期要件では `--dedupe-mode exact` のみサポート。将来 `trim` や `lowercase` などを追加可能な設計とする。
 
+### 新機能：既存ブラウザ接続
+
+`--connect-existing`オプションを使用すると、手動でログイン済みのブラウザに接続できます。
+
+**メリット：**
+- OAuth/SSOログインが必要なサイトに対応
+- 手動で画面遷移（タブ切り替えなど）してからスクリプト実行可能
+- ログイン処理の自動化が不要
+
+**使用手順：**
+1. Chromeをデバッグモードで起動（`--remote-debugging-port=9222`）
+2. 手動でログインと画面遷移
+3. `--connect-existing`オプションでスクリプト実行
+
 ### 実行例
 
-```bash
-# 新規実行
-scroll-copy run \
-  --url "https://example.com/page" \
-  --container ".transcript-scroll" \
-  --line-selector ".transcript-line" \
-  --output-raw "./out/raw_output.txt" \
+```powershell
+# 既存ブラウザに接続して実行（推奨）
+python scroll_copy.py run `
+  --connect-existing `
+  --container ".transcript-scroll" `
+  --line-selector ".transcript-line" `
+  --output-raw "./out/raw_output.txt" `
+  --output-final "./out/final_output.txt"
+
+# 新規ブラウザで実行
+python scroll_copy.py run `
+  --url "https://example.com/page" `
+  --container ".transcript-scroll" `
+  --line-selector ".transcript-line" `
+  --output-raw "./out/raw_output.txt" `
   --output-final "./out/final_output.txt"
 
 # 中断後の再開
-scroll-copy run \
-  --resume \
-  --state-file "./out/state.json"
+python scroll_copy.py run `
+  --resume `
+  --state-file "./state.json"
 
 # 収集済みrawから整形のみ再実行
-scroll-copy finalize \
-  --output-raw "./out/raw_output.txt" \
-  --output-final "./out/final_output.txt" \
+python scroll_copy.py finalize `
+  --output-raw "./out/raw_output.txt" `
+  --output-final "./out/final_output.txt" `
   --dedupe-mode exact
+
+# 複数行にまたがるコマンド（PowerShell）
+python scroll_copy.py run `
+  --connect-existing `
+  --container "#scrollToTargetTargetedFocusZone" `
+  --line-selector '[class^="entryText-"]' `
+  --max-idle-scrolls 10 `
+  --scroll-step 500 `
+  --scroll-interval-ms 800 `
+  --output-raw "./out/raw_output.txt" `
+  --output-final "./out/final_output.txt"
 ```
 
 ### 実サイトで確定したセレクタ例
@@ -205,13 +318,23 @@ scroll-copy finalize \
 
 実行コマンド例:
 
-```bash
-scroll-copy run \
-  --url "対象URL" \
-  --container "#scrollToTargetTargetedFocusZone" \
-  --line-selector '[class^="entryText-"]' \
-  --max-idle-scrolls 8 \
-  --output-raw "./out/raw_output.txt" \
+```powershell
+# 既存ブラウザに接続（推奨）
+python scroll_copy.py run `
+  --connect-existing `
+  --container "#scrollToTargetTargetedFocusZone" `
+  --line-selector '[class^="entryText-"]' `
+  --max-idle-scrolls 8 `
+  --output-raw "./out/raw_output.txt" `
+  --output-final "./out/final_output.txt"
+
+# 新規ブラウザで実行
+python scroll_copy.py run `
+  --url "対象URL" `
+  --container "#scrollToTargetTargetedFocusZone" `
+  --line-selector '[class^="entryText-"]' `
+  --max-idle-scrolls 8 `
+  --output-raw "./out/raw_output.txt" `
   --output-final "./out/final_output.txt"
 ```
 
