@@ -106,6 +106,9 @@ class RunConfig:
     do_finalize: bool
     connect_existing: bool
     debug_port: int
+    text_only: bool
+    entry_selector: str
+    speaker_selector: str
 
 
 def build_state_base(cfg: RunConfig, run_id: str) -> dict[str, Any]:
@@ -175,13 +178,17 @@ def effective_run_config(args: argparse.Namespace) -> RunConfig:
     if not args.connect_existing and not url:
         raise ValueError("--url は必須です（--connect-existing または --resume 時は省略可）")
     
-    if not container or not line_selector:
-        raise ValueError("--container, --line-selector は必須です（--resume 時は state.json から補完可）")
+    if not container:
+        raise ValueError("--container は必須です（--resume 時は state.json から補完可）")
+    
+    # text_only モードの場合は line_selector が必須
+    if args.text_only and not line_selector:
+        raise ValueError("--text-only モードでは --line-selector が必須です")
 
     return RunConfig(
         url=url,
         container=container,
-        line_selector=line_selector,
+        line_selector=line_selector or '[class^="entryText-"]',
         output_raw=args.output_raw,
         output_final=args.output_final,
         state_file=args.state_file,
@@ -199,6 +206,9 @@ def effective_run_config(args: argparse.Namespace) -> RunConfig:
         do_finalize=args.finalize,
         connect_existing=args.connect_existing,
         debug_port=args.debug_port,
+        text_only=args.text_only,
+        entry_selector=args.entry_selector,
+        speaker_selector=args.speaker_selector,
     )
 
 
@@ -215,6 +225,11 @@ def run_command(args: argparse.Namespace) -> int:
     run_id = utc_run_id()
     state = build_state_base(cfg, run_id)
     unique_seen: set[str] = set()
+
+    # --resume が指定されていない場合は既存の raw_output を削除
+    if not cfg.resume and cfg.output_raw.exists():
+        cfg.output_raw.unlink()
+        print(f"[init] 既存のraw出力ファイルを削除しました: {cfg.output_raw}")
 
     if cfg.resume and cfg.state_file.exists():
         old = load_state(cfg.state_file)
@@ -258,17 +273,48 @@ def run_command(args: argparse.Namespace) -> int:
 
             while state["progress"]["idle_scroll_count"] < cfg.max_idle_scrolls:
                 try:
-                    texts: list[str] = container.first.evaluate(
-                        """
-                        (el, lineSelector) => {
-                          const nodes = [...el.querySelectorAll(lineSelector)];
-                          return nodes
-                            .map(n => (n.innerText ?? n.textContent ?? '').trim())
-                            .filter(Boolean);
-                        }
-                        """,
-                        cfg.line_selector,
-                    )
+                    texts: list[str]
+                    if cfg.text_only:
+                        # 本文のみモード（従来互換）
+                        texts = container.first.evaluate(
+                            """
+                            (el, lineSelector) => {
+                              const nodes = [...el.querySelectorAll(lineSelector)];
+                              return nodes
+                                .map(n => (n.innerText ?? n.textContent ?? '').trim())
+                                .filter(Boolean);
+                            }
+                            """,
+                            cfg.line_selector,
+                        )
+                    else:
+                        # 話者名付きモード（デフォルト）
+                        texts = container.first.evaluate(
+                            """
+                            (el, config) => {
+                              const entries = [...el.querySelectorAll(config.entrySelector)];
+                              return entries.map(entry => {
+                                const speakerEl = entry.querySelector(config.speakerSelector);
+                                const textEl = entry.querySelector(config.lineSelector);
+                                
+                                const speakerRaw = (speakerEl?.innerText ?? speakerEl?.textContent ?? '').trim();
+                                const text = (textEl?.innerText ?? textEl?.textContent ?? '').trim();
+                                
+                                // 話者名から時刻情報を除去
+                                // パターン: "名前 1 時間 30 分間 45 秒間", "名前 数字 分間", "名前 数字 秒間", "名前 数字 秒", etc.
+                                const speaker = speakerRaw.replace(/\\s+\\d+\\s*(時間|分間?|秒間?).*$/, '').trim();
+                                
+                                if (!text) return '';
+                                return speaker ? `${speaker}\\t${text}` : text;
+                              }).filter(Boolean);
+                            }
+                            """,
+                            {
+                                "entrySelector": cfg.entry_selector,
+                                "speakerSelector": cfg.speaker_selector,
+                                "lineSelector": cfg.line_selector,
+                            },
+                        )
 
                     new_unique_count = 0
                     for t in texts:
@@ -402,18 +448,67 @@ def doctor_command(args: argparse.Namespace) -> int:
 
             container = page.locator(args.container)
             container_found = container.count() > 0
-            line_count = 0
+            
+            result: dict[str, Any] = {
+                "containerFound": container_found,
+                "containerSelector": args.container,
+            }
+            
             if container_found:
                 container.first.wait_for(state="visible", timeout=args.timeout_ms)
-                line_count = container.first.locator(args.line_selector).count()
+                
+                # text_only モードの場合
+                if args.text_only:
+                    line_count = container.first.locator(args.line_selector).count()
+                    result.update({
+                        "mode": "text_only",
+                        "lineCount": line_count,
+                        "lineSelector": args.line_selector,
+                    })
+                else:
+                    # 話者名付きモード（デフォルト）
+                    entry_count = container.first.locator(args.entry_selector).count()
+                    speaker_count = container.first.locator(args.speaker_selector).count()
+                    text_count = container.first.locator(args.line_selector).count()
+                    
+                    # サンプルデータを取得
+                    sample = None
+                    if entry_count > 0:
+                        sample = container.first.evaluate(
+                            """
+                            (el, config) => {
+                              const entry = el.querySelector(config.entrySelector);
+                              if (!entry) return null;
+                              
+                              const speakerEl = entry.querySelector(config.speakerSelector);
+                              const textEl = entry.querySelector(config.lineSelector);
+                              
+                              const speakerRaw = (speakerEl?.innerText ?? speakerEl?.textContent ?? '').trim();
+                              const text = (textEl?.innerText ?? textEl?.textContent ?? '').trim();
+                              const speaker = speakerRaw.replace(/\\s+\\d+\\s*(時間|分間?|秒間?).*$/, '').trim();
+                              
+                              return { speaker, text };
+                            }
+                            """,
+                            {
+                                "entrySelector": args.entry_selector,
+                                "speakerSelector": args.speaker_selector,
+                                "lineSelector": args.line_selector,
+                            },
+                        )
+                    
+                    result.update({
+                        "mode": "with_speaker",
+                        "entryCount": entry_count,
+                        "speakerCount": speaker_count,
+                        "textCount": text_count,
+                        "entrySelector": args.entry_selector,
+                        "speakerSelector": args.speaker_selector,
+                        "lineSelector": args.line_selector,
+                        "sampleEntry": sample,
+                    })
 
-            result = {
-                "containerFound": container_found,
-                "lineCount": line_count,
-                "containerSelector": args.container,
-                "lineSelector": args.line_selector,
-            }
-            print(json.dumps(result, ensure_ascii=False))
+            print(json.dumps(result, ensure_ascii=False, indent=2))
             browser.close()
 
             if not container_found:
@@ -449,6 +544,9 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--finalize", action=argparse.BooleanOptionalAction, default=True)
     run.add_argument("--connect-existing", action="store_true", help="既存のデバッグモードブラウザに接続")
     run.add_argument("--debug-port", type=int, default=9222, help="デバッグポート番号")
+    run.add_argument("--text-only", action="store_true", help="本文のみ取得（話者名なし）")
+    run.add_argument("--entry-selector", type=str, default='[class^="baseEntry-"]', help="エントリ親要素のセレクタ")
+    run.add_argument("--speaker-selector", type=str, default='[id^="timestampSpeakerAriaLabel-"]', help="話者名要素のセレクタ")
     run.set_defaults(func=run_command)
 
     fin = sub.add_parser("finalize", help="rawから最終出力を生成")
@@ -460,9 +558,12 @@ def build_parser() -> argparse.ArgumentParser:
     doc = sub.add_parser("doctor", help="セレクタ事前検証")
     doc.add_argument("--url", type=str, required=True)
     doc.add_argument("--container", type=str, required=True)
-    doc.add_argument("--line-selector", dest="line_selector", type=str, required=True)
+    doc.add_argument("--line-selector", dest="line_selector", type=str, default='[class^="entryText-"]')
     doc.add_argument("--headless", action=argparse.BooleanOptionalAction, default=True)
     doc.add_argument("--timeout-ms", type=int, default=30000)
+    doc.add_argument("--text-only", action="store_true", help="本文のみ取得（話者名なし）")
+    doc.add_argument("--entry-selector", type=str, default='[class^="baseEntry-"]', help="エントリ親要素のセレクタ")
+    doc.add_argument("--speaker-selector", type=str, default='[id^="timestampSpeakerAriaLabel-"]', help="話者名要素のセレクタ")
     doc.set_defaults(func=doctor_command)
 
     return parser

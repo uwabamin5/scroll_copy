@@ -50,25 +50,55 @@ OAuth/SSOログインが必要なサイトや、手動で画面遷移が必要�
 
 #### 3-3. スクリプトを実行
 
+**デフォルト（話者名付き）：**
+
 ```powershell
 python scroll_copy.py run `
   --connect-existing `
   --container "#scrollToTargetTargetedFocusZone" `
+  --output-raw "./out/raw_output.txt" `
+  --output-final "./out/final_output.txt"
+```
+
+出力形式：`話者名\t本文テキスト`（タブ区切り）
+
+**本文のみ取得（従来互換）：**
+
+```powershell
+python scroll_copy.py run `
+  --connect-existing `
+  --container "#scrollToTargetTargetedFocusZone" `
+  --text-only `
   --line-selector '[class^="entryText-"]' `
   --output-raw "./out/raw_output.txt" `
   --output-final "./out/final_output.txt"
 ```
 
-**注意：** `--connect-existing`を使用する場合、`--url`は省略可能です（現在開いているページで実行されます）。
+**注意：**
+- `--connect-existing`を使用する場合、`--url`は省略可能です（現在開いているページで実行されます）
+- デフォルトでは話者名付きで取得します。本文のみ必要な場合は`--text-only`を指定してください
 
 ### 4. 新しいブラウザで実行する方法
 
 ログインが不要なサイトの場合：
 
+**デフォルト（話者名付き）：**
+
 ```powershell
 python scroll_copy.py run `
   --url "対象URL" `
   --container "#scrollToTargetTargetedFocusZone" `
+  --output-raw "./out/raw_output.txt" `
+  --output-final "./out/final_output.txt"
+```
+
+**本文のみ取得：**
+
+```powershell
+python scroll_copy.py run `
+  --url "対象URL" `
+  --container "#scrollToTargetTargetedFocusZone" `
+  --text-only `
   --line-selector '[class^="entryText-"]' `
   --output-raw "./out/raw_output.txt" `
   --output-final "./out/final_output.txt"
@@ -79,7 +109,6 @@ python scroll_copy.py run `
 python scroll_copy.py run `
   --url "対象URL" `
   --container "#scrollToTargetTargetedFocusZone" `
-  --line-selector '[class^="entryText-"]' `
   --no-headless `
   --output-raw "./out/raw_output.txt" `
   --output-final "./out/final_output.txt"
@@ -89,10 +118,40 @@ python scroll_copy.py run `
 
 セレクタが正しいか確認：
 
+**デフォルト（話者名付きモード）：**
+
+```powershell
+python scroll_copy.py doctor `
+  --url "対象URL" `
+  --container "#scrollToTargetTargetedFocusZone"
+```
+
+出力例：
+```json
+{
+  "containerFound": true,
+  "containerSelector": "#scrollToTargetTargetedFocusZone",
+  "mode": "with_speaker",
+  "entryCount": 87,
+  "speakerCount": 87,
+  "textCount": 87,
+  "entrySelector": "[class^=\"baseEntry-\"]",
+  "speakerSelector": "[id^=\"timestampSpeakerAriaLabel-\"]",
+  "lineSelector": "[class^=\"entryText-\"]",
+  "sampleEntry": {
+    "speaker": "Yasunari Saitou",
+    "text": "あの、例えばほら、なんか項数がこうで。"
+  }
+}
+```
+
+**本文のみモード：**
+
 ```powershell
 python scroll_copy.py doctor `
   --url "対象URL" `
   --container "#scrollToTargetTargetedFocusZone" `
+  --text-only `
   --line-selector '[class^="entryText-"]'
 ```
 
@@ -227,7 +286,10 @@ python scroll_copy.py run `
 |---|---:|---:|---|
 | `--url` | string | なし | 対象ページURL（`--connect-existing`時は省略可） |
 | `--container` | string | なし | テキスト表示スクロール領域のCSSセレクタ |
-| `--line-selector` | string | なし | 1行テキスト要素のCSSセレクタ |
+| `--line-selector` | string | `[class^="entryText-"]` | 1行テキスト要素のCSSセレクタ |
+| `--text-only` | flag | `false` | 本文のみ取得（話者名なし） |
+| `--entry-selector` | string | `[class^="baseEntry-"]` | エントリ親要素のセレクタ（話者名付きモード用） |
+| `--speaker-selector` | string | `[id^="timestampSpeakerAriaLabel-"]` | 話者名要素のセレクタ（話者名付きモード用） |
 | `--output-raw` | path | `./raw_output.txt` | 逐次追記する生データ出力先 |
 | `--output-final` | path | `./final_output.txt` | 重複除去後の最終出力先 |
 | `--state-file` | path | `./state.json` | 再開用状態ファイル |
@@ -247,6 +309,17 @@ python scroll_copy.py run `
 
 > 初期要件では `--dedupe-mode exact` のみサポート。将来 `trim` や `lowercase` などを追加可能な設計とする。
 
+### 新機能：話者名付き取得（v2.0）
+
+**デフォルト動作の変更：**
+- v2.0以降、デフォルトで話者名付きで取得します
+- 出力形式：`話者名\t本文テキスト`（タブ区切り）
+- 話者名から時刻情報（"5 分間 37 秒間"など）は自動除去されます
+
+**本文のみ取得（従来互換）：**
+- `--text-only`オプションを指定すると、v1.x互換の本文のみモードで動作します
+- この場合、`--line-selector`の指定が必須です
+
 ### 新機能：既存ブラウザ接続
 
 `--connect-existing`オプションを使用すると、手動でログイン済みのブラウザに接続できます。
@@ -264,19 +337,26 @@ python scroll_copy.py run `
 ### 実行例
 
 ```powershell
-# 既存ブラウザに接続して実行（推奨）
+# 既存ブラウザに接続して実行（推奨・話者名付き）
 python scroll_copy.py run `
   --connect-existing `
-  --container ".transcript-scroll" `
-  --line-selector ".transcript-line" `
+  --container "#scrollToTargetTargetedFocusZone" `
   --output-raw "./out/raw_output.txt" `
   --output-final "./out/final_output.txt"
 
-# 新規ブラウザで実行
+# 新規ブラウザで実行（話者名付き）
 python scroll_copy.py run `
   --url "https://example.com/page" `
-  --container ".transcript-scroll" `
-  --line-selector ".transcript-line" `
+  --container "#scrollToTargetTargetedFocusZone" `
+  --output-raw "./out/raw_output.txt" `
+  --output-final "./out/final_output.txt"
+
+# 本文のみ取得（従来互換）
+python scroll_copy.py run `
+  --connect-existing `
+  --container "#scrollToTargetTargetedFocusZone" `
+  --text-only `
+  --line-selector '[class^="entryText-"]' `
   --output-raw "./out/raw_output.txt" `
   --output-final "./out/final_output.txt"
 
