@@ -1,1 +1,285 @@
 # scroll_copy
+
+Webページ内の特定スクロール領域に表示されるテキストを、スクロール操作に合わせて自動収集し、重複除去したうえでテキスト出力するローカルスクリプトプロジェクトです。
+
+## クイックスタート（実装版）
+
+### 1. 依存関係インストール
+
+```bash
+python3 -m pip install -r requirements.txt
+python3 -m playwright install chromium
+```
+
+### 2. doctor（事前検証）
+
+```bash
+python3 scroll_copy.py doctor \
+  --url "対象URL" \
+  --container "#scrollToTargetTargetedFocusZone" \
+  --line-selector '[class^="entryText-"]'
+```
+
+### 3. run（収集＋最終出力）
+
+```bash
+python3 scroll_copy.py run \
+  --url "対象URL" \
+  --container "#scrollToTargetTargetedFocusZone" \
+  --line-selector '[class^="entryText-"]' \
+  --output-raw "./out/raw_output.txt" \
+  --output-final "./out/final_output.txt"
+```
+
+### 4. finalize（整形のみ再実行）
+
+```bash
+python3 scroll_copy.py finalize \
+  --output-raw "./out/raw_output.txt" \
+  --output-final "./out/final_output.txt"
+```
+
+## 目的
+
+- スクロール中に表示されるテキストを取りこぼしなく収集する
+- 最終的に扱いやすいテキストファイルとして出力する
+- 同一行の重複を削除してデータ品質を上げる
+
+## 想定ユースケース
+
+- ページ全体とは別に、テキスト専用のスクロール領域があるサイト
+- スクロールを進めると過去の行が消えていく（仮想リスト型）表示
+- 手作業コピーでは取りこぼしや重複が起きやすいケース
+
+## 必要機能
+
+1. **スクロール連動取得機能**  
+   特定スクロール領域を一定間隔で下方向へスクロールし、表示中のテキスト行を取得する。
+
+2. **一時保持／保存機能**  
+   取得行はメモリ上の一時バッファ（仮想クリップボード）または逐次ファイル追記で保持する。
+
+3. **終了判定機能**  
+   一定回数スクロールしても新規行が増えない場合、末尾到達とみなして処理を終了する。
+
+4. **重複除去機能**  
+   まずは完全一致の行を重複と判定して1行に統合する（将来拡張可能）。
+
+5. **テキスト出力機能**  
+   最終結果をUTF-8テキストファイルとして出力する。
+
+## データ保持方式
+
+- 第一候補：**最初からテキストファイルへ追記**
+  - 長時間収集時のメモリ使用量を抑えやすい
+  - 中断時にも途中データが残る
+- 代替案：メモリに蓄積して最後に一括出力
+  - 実装は直感的だが、データ量が増えるとメモリ負荷が高くなる
+
+本プロジェクトでは、安定運用のため **逐次ファイル追記＋終了時重複除去** を推奨します。
+
+## 技術選定（推奨）
+
+実装スタックは **Python + Playwright** を第一候補とします。
+
+- DOM取得とスクロール操作の安定性が高い
+- 待機・再試行などの制御を実装しやすい
+- テキスト処理（重複除去・整形・出力）が書きやすい
+- ローカルスクリプト運用に適している
+
+## 実装方針（概要）
+
+1. 対象ページを開く
+2. 対象スクロールコンテナを特定
+3. ループで「取得→保存→スクロール→新規行判定」を繰り返す
+4. 新規行が一定回数増えなければ終了
+5. 収集結果を重複除去して最終txtを出力
+
+## 失敗時リカバリ方針
+
+スクロール収集中に通信遅延やDOM更新のタイミングずれ、ブラウザ例外が発生しても、収集結果を可能な限り失わず再開できる設計を採用します。
+
+### 1) 途中保存（チェックポイント）
+
+- 取得した行を都度 `raw_output.txt` に追記保存（即時永続化）
+- `state.json` に以下を定期保存
+  - 最終スクロール位置
+  - 直近の取得件数
+  - 新規行が増えなかった連続回数
+  - 最終更新時刻
+
+### 2) 自動リトライ
+
+- 要素取得失敗や一時タイムアウト時は、短い待機を挟んで再試行
+- 再試行回数上限を超えた場合は異常終了せず中断保存へ移行
+
+### 3) 中断時の安全終了
+
+- 例外発生時でも `state.json` とログを必ず出力
+- その時点までの `raw_output.txt` は保持
+- 後続の重複除去フェーズのみ再実行できる設計にする
+
+### 4) 再開実行
+
+- `--resume` オプションで `state.json` を読み込み、前回位置から収集再開
+- 既存 `raw_output.txt` への追記モードで再開可能にする
+
+### 5) 最終整形の分離
+
+- 収集フェーズと整形フェーズ（重複除去・最終出力）を分離
+- 収集失敗後でも整形のみ実行できるようにして復旧容易性を高める
+
+## CLI仕様（実装向け詳細）
+
+想定コマンド名は `scroll-copy`（仮）です。
+
+```bash
+scroll-copy run --url "https://example.com" --container ".scroll-pane" --line-selector ".line"
+```
+
+### サブコマンド
+
+- `run`: 収集（必要に応じて整形まで実行）
+- `finalize`: 既存の `raw_output.txt` から重複除去して最終出力のみ実行
+- `doctor`: 設定・セレクタ・権限・出力先の事前チェック
+
+### 主なオプション一覧
+
+| オプション | 型 | デフォルト | 説明 |
+|---|---:|---:|---|
+| `--url` | string | なし | 対象ページURL |
+| `--container` | string | なし | テキスト表示スクロール領域のCSSセレクタ |
+| `--line-selector` | string | なし | 1行テキスト要素のCSSセレクタ |
+| `--output-raw` | path | `./raw_output.txt` | 逐次追記する生データ出力先 |
+| `--output-final` | path | `./final_output.txt` | 重複除去後の最終出力先 |
+| `--state-file` | path | `./state.json` | 再開用状態ファイル |
+| `--resume` | flag | `false` | `state.json` を読み込んで再開 |
+| `--max-idle-scrolls` | int | `8` | 新規行が増えない状態を何回で終了判定するか |
+| `--scroll-step` | int(px) | `400` | 1回のスクロール量 |
+| `--scroll-interval-ms` | int | `600` | スクロール間隔（ms） |
+| `--checkpoint-interval` | int(loops) | `5` | 何ループごとに `state.json` を更新するか |
+| `--max-retries` | int | `3` | 一時エラー時の再試行回数 |
+| `--retry-wait-ms` | int | `1000` | 再試行前待機（ms） |
+| `--dedupe-mode` | enum | `exact` | 重複判定方式（初期値は完全一致） |
+| `--headless` | flag | `true` | ヘッドレス実行（デバッグ時は `false` 推奨） |
+| `--timeout-ms` | int | `30000` | 要素待機・操作タイムアウト |
+| `--log-level` | enum | `info` | `debug / info / warn / error` |
+
+> 初期要件では `--dedupe-mode exact` のみサポート。将来 `trim` や `lowercase` などを追加可能な設計とする。
+
+### 実行例
+
+```bash
+# 新規実行
+scroll-copy run \
+  --url "https://example.com/page" \
+  --container ".transcript-scroll" \
+  --line-selector ".transcript-line" \
+  --output-raw "./out/raw_output.txt" \
+  --output-final "./out/final_output.txt"
+
+# 中断後の再開
+scroll-copy run \
+  --resume \
+  --state-file "./out/state.json"
+
+# 収集済みrawから整形のみ再実行
+scroll-copy finalize \
+  --output-raw "./out/raw_output.txt" \
+  --output-final "./out/final_output.txt" \
+  --dedupe-mode exact
+```
+
+### 実サイトで確定したセレクタ例
+
+以下は実際の確認結果に基づく、今回サイト向けの設定例です。
+
+- `--container '#scrollToTargetTargetedFocusZone'`
+- `--line-selector '[class^="entryText-"]'`
+
+実行前のConsole確認結果:
+
+```js
+{ containerFound: true, lineCount: 87 }
+```
+
+実行コマンド例:
+
+```bash
+scroll-copy run \
+  --url "対象URL" \
+  --container "#scrollToTargetTargetedFocusZone" \
+  --line-selector '[class^="entryText-"]' \
+  --max-idle-scrolls 8 \
+  --output-raw "./out/raw_output.txt" \
+  --output-final "./out/final_output.txt"
+```
+
+## `state.json` スキーマ（初版）
+
+```json
+{
+  "version": 1,
+  "run_id": "20260215T124500Z_abc123",
+  "status": "running",
+  "target": {
+    "url": "https://example.com/page",
+    "container_selector": ".transcript-scroll",
+    "line_selector": ".transcript-line"
+  },
+  "progress": {
+    "loop_count": 42,
+    "scroll_top": 16800,
+    "total_lines_seen": 1260,
+    "unique_lines_seen": 1184,
+    "idle_scroll_count": 2,
+    "last_new_line_at": "2026-02-15T12:47:12+09:00"
+  },
+  "files": {
+    "raw_output": "./out/raw_output.txt",
+    "final_output": "./out/final_output.txt",
+    "log_file": "./out/run.log"
+  },
+  "runtime": {
+    "max_idle_scrolls": 8,
+    "scroll_step": 400,
+    "scroll_interval_ms": 600,
+    "max_retries": 3,
+    "retry_wait_ms": 1000,
+    "dedupe_mode": "exact"
+  },
+  "timestamps": {
+    "started_at": "2026-02-15T12:45:01+09:00",
+    "updated_at": "2026-02-15T12:48:20+09:00"
+  },
+  "last_error": null
+}
+```
+
+### スキーマ項目の意味
+
+- `status`: `running / interrupted / completed / failed`
+- `progress.idle_scroll_count`: 新規行未検出の連続回数（終了判定に利用）
+- `last_error`: 直近の失敗情報（再開可否判断に利用）
+
+例（失敗時）:
+
+```json
+{
+  "code": "E_CONTAINER_NOT_FOUND",
+  "message": "container selector not found",
+  "at": "2026-02-15T12:49:03+09:00",
+  "retry_count": 3
+}
+```
+
+## 終了コード設計（推奨）
+
+- `0`: 正常終了
+- `10`: 設定不正（必須引数不足・型不正）
+- `20`: 対象要素未検出（container/line selector不一致）
+- `30`: リトライ上限超過で中断保存
+- `40`: 出力書き込み失敗
+- `50`: 予期しない例外
+
+これにより、CIやバッチ実行時に終了理由を機械的に判定しやすくする。
