@@ -252,8 +252,47 @@ def run_command(args: argparse.Namespace) -> int:
                 # 既存のブラウザに接続
                 browser = p.chromium.connect_over_cdp(f"http://localhost:{cfg.debug_port}")
                 context = browser.contexts[0]
-                page = context.pages[0] if context.pages else context.new_page()
-                print(f"[connect] 既存のブラウザに接続しました (現在のURL: {page.url})")
+                
+                # すべてのタブを列挙
+                all_pages = context.pages
+                print(f"[connect] 既存のブラウザに接続しました ({len(all_pages)} 個のタブを検出)")
+                
+                # chrome:// と devtools:// 以外のタブを探す
+                valid_pages = [p for p in all_pages
+                              if not p.url.startswith('chrome://')
+                              and not p.url.startswith('devtools://')]
+                
+                if not valid_pages:
+                    print("[error] 有効なタブが見つかりません。chrome:// や devtools:// 以外のページを開いてください。", file=sys.stderr)
+                    browser.close()
+                    return EXIT_CONFIG_ERROR
+                
+                # 複数の有効なタブがある場合は列挙
+                if len(valid_pages) > 1:
+                    print("\n[tab selection] 複数の有効なタブが見つかりました:")
+                    for i, p in enumerate(valid_pages, 1):
+                        # URLを短縮表示
+                        url_display = p.url if len(p.url) <= 80 else p.url[:77] + "..."
+                        print(f"  {i}. {url_display}")
+                    
+                    # ユーザーに選択させる
+                    try:
+                        choice = input(f"\n使用するタブの番号を入力してください (1-{len(valid_pages)}, デフォルト: 1): ").strip()
+                        if choice == "":
+                            choice = "1"
+                        tab_index = int(choice) - 1
+                        if tab_index < 0 or tab_index >= len(valid_pages):
+                            print(f"[warning] 無効な番号です。最初のタブを使用します。")
+                            tab_index = 0
+                    except (ValueError, KeyboardInterrupt):
+                        print(f"\n[warning] 入力が無効です。最初のタブを使用します。")
+                        tab_index = 0
+                    
+                    page = valid_pages[tab_index]
+                else:
+                    page = valid_pages[0]
+                
+                print(f"[connect] 選択されたタブ: {page.url}")
                 
                 # URLが指定されている場合のみ移動
                 if cfg.url and page.url != cfg.url:
@@ -531,7 +570,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--output-final", type=Path, default=Path("./final_output.txt"))
     run.add_argument("--state-file", type=Path, default=Path("./state.json"))
     run.add_argument("--resume", action="store_true")
-    run.add_argument("--max-idle-scrolls", type=int, default=8)
+    run.add_argument("--max-idle-scrolls", type=int, default=15)
     run.add_argument("--scroll-step", type=int, default=400)
     run.add_argument("--scroll-interval-ms", type=int, default=600)
     run.add_argument("--checkpoint-interval", type=int, default=5)

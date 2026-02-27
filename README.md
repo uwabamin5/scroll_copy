@@ -296,7 +296,7 @@ python scroll_copy.py run `
 | `--resume` | flag | `false` | `state.json` を読み込んで再開 |
 | `--connect-existing` | flag | `false` | 既存のデバッグモードブラウザに接続 |
 | `--debug-port` | int | `9222` | デバッグポート番号 |
-| `--max-idle-scrolls` | int | `8` | 新規行が増えない状態を何回で終了判定するか |
+| `--max-idle-scrolls` | int | `15` | 新規行が増えない状態を何回で終了判定するか（長い動画の場合は20-30を推奨） |
 | `--scroll-step` | int(px) | `400` | 1回のスクロール量 |
 | `--scroll-interval-ms` | int | `600` | スクロール間隔（ms） |
 | `--checkpoint-interval` | int(loops) | `5` | 何ループごとに `state.json` を更新するか |
@@ -485,4 +485,85 @@ python scroll_copy.py run `
 - `40`: 出力書き込み失敗
 - `50`: 予期しない例外
 
+## トラブルシューティング
+
+### エラー: `[selector error] container not found`
+
+**原因：** Chrome内部タブ（`chrome://` や `devtools://`）が選択されている可能性があります。
+
+**解決方法：**
+
+1. **タブ選択機能を使用**（v2.1以降）
+   - `--connect-existing` で接続すると、有効なタブが自動的に列挙されます
+   - 対象ページのタブ番号を入力してください
+
+2. **手動でタブを整理**
+   - デバッグモードのChromeで、対象ページのタブをアクティブにする
+   - 不要なタブ（DevToolsなど）を閉じる
+   - スクリプトを再実行
+
+3. **診断スクリプトで調査**
+   ```powershell
+   python inspect_page.py --connect-existing
+   ```
+   このスクリプトが正しいセレクタを提案します。
+
+### 問題: 最後までスクロールせずに終了する
+
+**原因：** 終了判定の閾値（`--max-idle-scrolls`）が小さすぎる可能性があります。
+
+**解決方法：**
+
+閾値を増やして実行：
+```powershell
+python scroll_copy.py run `
+  --connect-existing `
+  --container "#scrollToTargetTargetedFocusZone" `
+  --max-idle-scrolls 20 `
+  --output-raw "./out/raw_output.txt" `
+  --output-final "./out/final_output.txt"
+```
+
+**パラメータ調整のガイドライン：**
+- `--max-idle-scrolls`: 新規行が増えない状態を何回連続で許容するか
+  - デフォルト: `15`
+  - 短い動画: `10-15`
+  - 長い動画: `20-30`
+  - 非常に長い動画: `30-50`
+
+- `--scroll-step`: 1回のスクロール量（ピクセル）
+  - デフォルト: `400`
+  - 小さくすると取りこぼしが減るが、処理時間が増える
+
+- `--scroll-interval-ms`: スクロール間隔（ミリ秒）
+  - デフォルト: `600`
+  - 大きくすると安定するが、処理時間が増える
+
+### 問題: セレクタが見つからない（Webサイトの構造変更）
+
+**解決方法：**
+
+1. **診断スクリプトを実行**
+   ```powershell
+   python inspect_page.py --connect-existing
+   ```
+
+2. **推奨セレクタを確認**
+   スクリプトが自動的に正しいセレクタを提案します。
+
+3. **doctorコマンドで検証**
+   ```powershell
+   python scroll_copy.py doctor `
+     --url "対象URL" `
+     --container "推奨されたセレクタ"
+   ```
+
+4. **新しいセレクタで実行**
+   ```powershell
+   python scroll_copy.py run `
+     --connect-existing `
+     --container "新しいセレクタ" `
+     --output-raw "./out/raw_output.txt" `
+     --output-final "./out/final_output.txt"
+   ```
 これにより、CIやバッチ実行時に終了理由を機械的に判定しやすくする。
